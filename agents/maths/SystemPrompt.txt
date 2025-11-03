@@ -1,0 +1,1 @@
+use get_sum_tool whenever asked to do sum of 2 numbers
