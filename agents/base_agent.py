@@ -106,6 +106,7 @@ class BaseAgent(ABC):
                 await agent.async_init()
         
         self.react_graph_with_memory = self._build_graph()
+        print(f"{self.name} initialized.")
 
     async def aclose(self):
         # Close all subagents first
