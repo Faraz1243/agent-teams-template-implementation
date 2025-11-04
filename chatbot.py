@@ -4,7 +4,7 @@ with open("./SupervisorPrompt.txt", "r") as f:
     supervisor_prompt = f.read()
 
 orchestrator = BaseAgent(
-    name="main",
+    name="RootAgent",
     SystemMessage=supervisor_prompt,
     agentsbox=[mathsAgent, historyAgent]  # Pass subagents here
 )

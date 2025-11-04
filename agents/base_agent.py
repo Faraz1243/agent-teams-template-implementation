@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, Tool
 from langgraph.graph import MessagesState, START, StateGraph, END
 from langgraph.prebuilt import tools_condition
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
 from abc import ABC
@@ -13,10 +14,15 @@ from fastapi.encoders import jsonable_encoder
 import datetime
 from typing import Literal, List
 
-# Sqlite files to store chat context using chat thread id
+# SQLITE Saver
 DB_FOLDER = "sqlite"
 os.makedirs(DB_FOLDER, exist_ok=True)
 DB_PATH = os.path.join(DB_FOLDER, "chatbot_memory.sqlite")
+# CloudSQL Saver
+DB_URL = "postgresql://neondb_owner:npg_vSqeky9BIxF7@ep-cool-king-ad60x9z6-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
+
+
+USE_CLOUDSQL = True  # Set to True to use CloudSQL Postgres saver
 
 load_dotenv()
 
@@ -103,9 +109,14 @@ class BaseAgent(ABC):
 
     async def async_init(self):
         if BaseAgent._saver_ctx is None:
-            BaseAgent._saver_ctx = AsyncSqliteSaver.from_conn_string(DB_PATH)
+            if USE_CLOUDSQL:
+                BaseAgent._saver_ctx = AsyncPostgresSaver.from_conn_string(DB_URL)
+            else:
+                BaseAgent._saver_ctx = AsyncSqliteSaver.from_conn_string(DB_PATH)
         if BaseAgent.memory is None:
             BaseAgent.memory = await BaseAgent._saver_ctx.__aenter__()   # manually enter
+            if USE_CLOUDSQL:
+                await BaseAgent.memory.setup()
         
         # Initialize all subagents
         for agent in self.agentsbox:
