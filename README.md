@@ -15,3 +15,7 @@ Pass logs array with config so that we can log each tool call, its parameters an
 ### Info
 History subagent is working fine. But the maths one isnt. Igues we need to change datatype of float to string in ArgSchema or Input model. And then we can type cast
 that to float for calculation
+
+### Problems
+Concurrent SQLite writes  ⚠️ Rarely  Could happen with heavy concurrent writes
+Solution: Use PostgreSql for checkpointer instead of Sqlite

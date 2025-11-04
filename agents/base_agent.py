@@ -20,6 +20,8 @@ load_dotenv()
 
 
 class BaseAgent(ABC):
+    _saver_ctx: AsyncSqliteSaver = None
+    memory = None
 
     def __init__(self, name, SystemMessage, toolbox=[], agentsbox=[]):
         GROK_MODEL = "openai/gpt-oss-120b"
@@ -97,8 +99,10 @@ class BaseAgent(ABC):
         return "tools"
 
     async def async_init(self):
-        self._saver_ctx = AsyncSqliteSaver.from_conn_string(DB_PATH)
-        self.memory = await self._saver_ctx.__aenter__()   # manually enter
+        if BaseAgent._saver_ctx is None:
+            BaseAgent._saver_ctx = AsyncSqliteSaver.from_conn_string(DB_PATH)
+        if BaseAgent.memory is None:
+            BaseAgent.memory = await BaseAgent._saver_ctx.__aenter__()   # manually enter
         
         # Initialize all subagents
         for agent in self.agentsbox:
@@ -114,8 +118,9 @@ class BaseAgent(ABC):
             if hasattr(agent, 'aclose'):
                 await agent.aclose()
         
+        
         # Then close this agent's resources
-        if hasattr(self, "_saver_ctx") and self._saver_ctx is not None:
+        if BaseAgent._saver_ctx is not None:
             await self._saver_ctx.__aexit__(None, None, None)
 
     def _build_graph(self):
@@ -127,7 +132,7 @@ class BaseAgent(ABC):
         
         # Only add subagent node if there are subagents
         if len(self.agentsbox)!=0:
-            builder.add_node("subagents", self.subagent_node)
+            builder.add_node("subagents", BaseAgent.subagent_node)
 
         # Set up routing
         builder.add_edge(START, "assistant")
