@@ -68,7 +68,7 @@ async def chat(
 
         res = {
             "thread_id": payload.thread_id,
-            "message": ans.replace('\n', '<br>')
+            "message": ans
         }
         return res
     except Exception as e:

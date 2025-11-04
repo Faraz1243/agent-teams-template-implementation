@@ -1,5 +1,7 @@
 from langchain_core.runnables import RunnableConfig
+from utils.utils import log_with_config
 
+@log_with_config
 async def get_sum_tool(
     a: float = 0,
     b: float = 0,

@@ -7,7 +7,9 @@ from langgraph.prebuilt import tools_condition
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from dotenv import load_dotenv
 from langchain_core.runnables import RunnableConfig
-from abc import ABC, abstractmethod
+from abc import ABC
+from langchain.tools import StructuredTool
+from fastapi.encoders import jsonable_encoder
 import datetime
 from typing import Literal, List
 
@@ -23,7 +25,7 @@ class BaseAgent(ABC):
     _saver_ctx: AsyncSqliteSaver = None
     memory = None
 
-    def __init__(self, name, SystemMessage, toolbox=[], agentsbox=[]):
+    def __init__(self, name, SystemMessage, toolbox:list[StructuredTool]=[], agentsbox:list["BaseAgent"]=[]):
         GROK_MODEL = "openai/gpt-oss-120b"
         self.grok_api_key = os.getenv("GROQ_API_KEY")
         self.simple_llm = ChatOpenAI(
@@ -59,8 +61,9 @@ class BaseAgent(ABC):
                     "type": "object",
                     "properties": {
                         "task": {
-                            "type": "string",
-                            "description": f"The specific task to delegate to {agent.name}"
+                            "type": ["string", "null"],
+                            "description": f"The specific task to delegate to {agent.name}",
+                            "default": ""
                         },
                         "context": {
                             "type": "string",
@@ -123,43 +126,6 @@ class BaseAgent(ABC):
         if BaseAgent._saver_ctx is not None:
             await self._saver_ctx.__aexit__(None, None, None)
 
-    def _build_graph(self):
-        builder = StateGraph(MessagesState)
-        
-        # Add main nodes - only add methods, not agent instances
-        builder.add_node("assistant", self.assistant)
-        builder.add_node("tools", self.tool_node)
-        
-        # Only add subagent node if there are subagents
-        if len(self.agentsbox)!=0:
-            builder.add_node("subagents", BaseAgent.subagent_node)
-
-        # Set up routing
-        builder.add_edge(START, "assistant")
-        
-        # Conditional routing from assistant
-        if len(self.agentsbox)!=0:
-            # If we have subagents, use custom routing
-            builder.add_conditional_edges(
-                "assistant",
-                self._route_after_assistant,
-                {
-                    "tools": "tools",
-                    "subagents": "subagents",
-                    "__end__": END
-                }
-            )
-            builder.add_edge("subagents", "assistant")
-        else:
-            # If no subagents, use standard tools_condition
-            builder.add_conditional_edges("assistant", tools_condition)
-        
-        # Tools always return to assistant
-        builder.add_edge("tools", "assistant")
-
-        
-        return builder.compile(checkpointer=self.memory)
-
     @staticmethod
     def generate_user_context_system_message(prompt) -> SystemMessage:
         system_prompt = f"Date Today: {datetime.datetime.now()}\n\n {prompt}"
@@ -175,12 +141,21 @@ class BaseAgent(ABC):
             ]
         }
 
-    async def chatbot_with_memory(self, user_request: str, thread_id: str, user_id: str):
+    async def chatbot_with_memory(self, user_request: str, thread_id: str, user_id: str, logs=[]):
+        print(f"\033[94m ============= [Agent:{self.name}] ============= \033[0m")
+        print(f"\033[94mUser Request: {user_request}\033[0m")
+        print(f"\033[94mThread ID: {thread_id}\033[0m")
+        print(f"\033[94mUser ID: {user_id}\033[0m")
+        
         result = await self.react_graph_with_memory.ainvoke(
             {"messages": [HumanMessage(content=user_request)]},
-            config={"configurable": {"thread_id": thread_id, "user_id": user_id}},
+            config={"configurable": {"thread_id": thread_id, "user_id": user_id, "request_logs": logs}},
         )
-        return result["messages"][-1].content
+        return {
+            "thread_id": thread_id,
+            "message" : result["messages"][-1].content,
+            "logs": jsonable_encoder(logs)
+        }
     
     async def tool_node(self, state: MessagesState, config: RunnableConfig = None):
         """Custom tool node that properly passes config to async tools"""
@@ -243,7 +218,46 @@ class BaseAgent(ABC):
         
         return {"messages": outputs}
 
+    def _build_graph(self):
+        builder = StateGraph(MessagesState)
+        
+        # Add main nodes - only add methods, not agent instances
+        builder.add_node("assistant", self.assistant)
+        builder.add_node("tools", self.tool_node)
+        
+        # Only add subagent node if there are subagents
+        if len(self.agentsbox)!=0:
+            builder.add_node("subagents", self.subagent_node)
+
+        # Set up routing
+        builder.add_edge(START, "assistant")
+        
+        # Conditional routing from assistant
+        if len(self.agentsbox)!=0:
+            # If we have subagents, use custom routing
+            builder.add_conditional_edges(
+                "assistant",
+                self._route_after_assistant,
+                {
+                    "tools": "tools",
+                    "subagents": "subagents",
+                    "__end__": END
+                }
+            )
+            builder.add_edge("subagents", "assistant")
+        else:
+            # If no subagents, use standard tools_condition
+            builder.add_conditional_edges("assistant", tools_condition)
+        
+        # Tools always return to assistant
+        builder.add_edge("tools", "assistant")
+
+        
+        return builder.compile(checkpointer=self.memory)
+
+
     async def subagent_node(self, state: MessagesState, config: RunnableConfig = None):
+        print(f"\033[95m[SUBAGENT NODE] Invoked subagent node\033[0m")
         """Node that handles subagent delegation"""
         outputs = []
         
@@ -268,7 +282,7 @@ class BaseAgent(ABC):
             
             subagent = subagent_lookup[tool_name]
             task = tool_args.get("task", "")
-            context = tool_args.get("context", "")
+            context = tool_args.get("context") or ""
             
             print(f"\033[95m[SUBAGENT] Delegating to: {subagent.name}\033[0m")
             print(f"\033[95m[SUBAGENT] Task: {task}\033[0m")
@@ -283,13 +297,15 @@ class BaseAgent(ABC):
                 # Get the thread_id from config to maintain separate conversation threads
                 thread_id = config.get("configurable", {}).get("thread_id", "default")
                 user_id = config.get("configurable", {}).get("user_id", "default")
+                logs = config.get("configurable", {}).get("request_logs", [])
                 subagent_thread_id = f"{thread_id}_subagent_{subagent.name}"
                 
                 # Invoke the subagent using its chatbot_with_memory method
                 result = await subagent.chatbot_with_memory(
                     user_request=subagent_request,
                     thread_id=subagent_thread_id,
-                    user_id=user_id
+                    user_id=user_id,
+                    logs=logs
                 )
                 
                 print(f"\033[95m[SUBAGENT] {subagent.name} completed successfully\033[0m")
